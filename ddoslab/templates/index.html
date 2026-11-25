@@ -1,0 +1,399 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Laboratório local e controlado de indisponibilidade HTTP e mitigação por limite de taxa.">
+  <title>DDoSLab — Laboratório de indisponibilidade e mitigação</title>
+  <link rel="icon" href="{{ url_for('static', filename='favicon.svg') }}" type="image/svg+xml">
+  <link rel="stylesheet" href="{{ url_for('static', filename='css/estilo.css') }}">
+  <script src="{{ url_for('static', filename='js/painel.js') }}" defer></script>
+</head>
+<body>
+  <a class="atalho-conteudo" href="#conteudo">Ir para o conteúdo</a>
+
+  <header class="topo">
+    <div class="wrap topo-grade">
+      <div>
+        <p class="sobretitulo">UFPB · Segurança da Computação · Entrega parcial</p>
+        <h1>DDoS<span>Lab</span></h1>
+        <p class="descricao-topo">
+          Laboratório local para observar, medir e comparar a indisponibilidade
+          de um serviço HTTP sob carga controlada.
+        </p>
+      </div>
+      <div class="topo-lateral">
+        <div class="equipe">
+          <span class="rotulo-equipe">Equipe</span>
+          {% for pessoa in equipe %}
+          <span>{{ pessoa }}</span>
+          {% endfor %}
+        </div>
+        <span id="conexao" class="selo selo-neutro" role="status">
+          <span class="ponto-vivo" aria-hidden="true"></span>
+          <span id="texto-conexao">Conectando ao painel</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main id="conteudo" class="wrap conteudo">
+    <section class="aviso-seguranca" aria-label="Escopo de segurança">
+      <strong>Escopo restrito:</strong>
+      todo o tráfego permanece no endereço de loopback <code>127.0.0.1</code>.
+      Não há campo para configurar alvos externos, e os cenários têm concorrência,
+      volume e duração máximos definidos pelo servidor.
+    </section>
+
+    <section class="grade-principal" aria-label="Controles do experimento">
+      <article class="cartao cartao-controle">
+        <header class="cabecalho-cartao">
+          <div>
+            <p class="sobretitulo">Passo 1</p>
+            <h2>Configurar e executar</h2>
+          </div>
+          <span id="estado-badge" class="selo selo-neutro">Ocioso</span>
+        </header>
+
+        <form id="form-experimento" novalidate>
+          <fieldset id="grupo-cenario">
+            <legend>Cenário de carga simulado</legend>
+            <div class="lista-cenarios">
+              {% for cenario in cenarios %}
+              <label class="opcao-cenario">
+                <input
+                  type="radio"
+                  name="cenario"
+                  value="{{ cenario.chave }}"
+                  {% if cenario.chave == 'elevado' %}checked{% endif %}
+                >
+                <span class="conteudo-cenario">
+                  <span class="linha-cenario">
+                    <strong>{{ cenario.rotulo }}</strong>
+                    <span class="etiqueta">{{ cenario.clientes_virtuais }} clientes</span>
+                  </span>
+                  <span class="descricao-cenario">{{ cenario.descricao }}</span>
+                  <span class="meta-cenario">
+                    {{ cenario.taxa_por_cliente }} req/s por cliente ·
+                    {{ cenario.duracao_s }} s ·
+                    até {{ cenario.total_planejado }} requisições planejadas
+                  </span>
+                </span>
+              </label>
+              {% endfor %}
+            </div>
+          </fieldset>
+
+          <label class="interruptor" for="protecao">
+            <input type="checkbox" id="protecao" name="protecao">
+            <span class="trilho" aria-hidden="true"></span>
+            <span class="texto-interruptor">
+              <strong>Proteção por cliente</strong>
+              <small>
+                Limitador real de {{ limites.limite_por_cliente_s|string|replace('.', ',') }} req/s por cliente,
+                com rajada de {{ limites.rajada_por_cliente }}.
+              </small>
+            </span>
+          </label>
+
+          <div class="acoes">
+            <button type="submit" id="btn-iniciar" class="botao botao-primario">
+              Iniciar experimento
+            </button>
+            <button type="button" id="btn-parar" class="botao botao-secundario" disabled>
+              Parar
+            </button>
+            <button type="button" id="btn-reiniciar" class="botao botao-fantasma">
+              Reiniciar laboratório
+            </button>
+          </div>
+        </form>
+
+        <div class="progresso" aria-live="polite">
+          <div class="linha-progresso">
+            <span id="texto-progresso">Pronto para iniciar.</span>
+            <strong id="tempo-progresso">0,0 s</strong>
+          </div>
+          <progress id="barra-progresso" max="100" value="0" aria-label="Progresso do experimento">0%</progress>
+        </div>
+
+        <p id="mensagem-controle" class="mensagem" role="alert" hidden></p>
+      </article>
+
+      <article class="cartao cartao-legitimo">
+        <header class="cabecalho-cartao">
+          <div>
+            <p class="sobretitulo">Passo 2</p>
+            <h2>Usuário legítimo</h2>
+          </div>
+          <span class="selo selo-azul">Navegador</span>
+        </header>
+        <p class="texto-apoio">
+          Este botão faz uma requisição HTTP real ao serviço limitado. O tempo
+          exibido é medido pelo navegador, do envio até a resposta.
+        </p>
+        <button type="button" id="btn-legitimo" class="botao botao-largo botao-azul">
+          Acessar o serviço agora
+        </button>
+        <div id="resultado-legitimo" class="resultado-legitimo" aria-live="polite">
+          <span class="resultado-vazio">Nenhuma tentativa manual nesta sessão.</span>
+        </div>
+        <p class="nota">
+          Durante o cenário, uma <strong>sonda legítima automática</strong> também
+          acessa o serviço a cada segundo. Ela fornece amostras comparáveis entre
+          execuções com e sem proteção.
+        </p>
+      </article>
+    </section>
+
+    <section aria-labelledby="titulo-resultados">
+      <div class="cabecalho-secao">
+        <div>
+          <p class="sobretitulo">Resultados experimentais</p>
+          <h2 id="titulo-resultados">Métricas medidas</h2>
+        </div>
+        <p class="texto-secao">
+          Contadores reais do servidor e das requisições observadas. Nenhum valor
+          abaixo é estimado pelo painel.
+        </p>
+      </div>
+
+      <div class="grade-kpis">
+        <article class="kpi kpi-sucesso">
+          <span class="rotulo-kpi">Sucessos</span>
+          <strong id="kpi-sucesso">0</strong>
+          <small id="kpi-sucesso-taxa">0,0% das respostas</small>
+        </article>
+        <article class="kpi kpi-rejeitado">
+          <span class="rotulo-kpi">Rejeitados pela proteção</span>
+          <strong id="kpi-rejeitado">0</strong>
+          <small>HTTP 429 medidos</small>
+        </article>
+        <article class="kpi kpi-falha">
+          <span class="rotulo-kpi">Falhas de disponibilidade</span>
+          <strong id="kpi-falhas">0</strong>
+          <small id="kpi-falhas-detalhe">503 e erros de transporte</small>
+        </article>
+        <article class="kpi kpi-latencia">
+          <span class="rotulo-kpi">Latência p95</span>
+          <strong id="kpi-p95">—</strong>
+          <small>requisições bem-sucedidas</small>
+        </article>
+        <article class="kpi kpi-legitimo">
+          <span class="rotulo-kpi">Sucesso da sonda legítima</span>
+          <strong id="kpi-legitimo">—</strong>
+          <small id="kpi-legitimo-detalhe">sem amostras</small>
+        </article>
+        <article class="kpi kpi-total">
+          <span class="rotulo-kpi">Respostas contabilizadas</span>
+          <strong id="kpi-total">0</strong>
+          <small id="kpi-total-detalhe">servidor + falhas de transporte</small>
+        </article>
+      </div>
+    </section>
+
+    <section class="grade-graficos" aria-label="Visualização em tempo real">
+      <article class="cartao cartao-grafico">
+        <header class="cabecalho-cartao">
+          <div>
+            <h2>Latência por segundo</h2>
+            <p class="texto-apoio">Somente respostas HTTP 200, medidas no servidor.</p>
+          </div>
+          <span class="selo selo-ao-vivo">
+            <span class="ponto-vivo" aria-hidden="true"></span>
+            <span id="selo-latencia-texto">Ao vivo</span>
+          </span>
+        </header>
+        <div class="legenda">
+          <span><i class="cor-linha cor-teal"></i> Média</span>
+          <span><i class="cor-linha cor-ambar"></i> p95</span>
+        </div>
+        <div class="area-grafico area-grafico-latencia">
+          <canvas id="grafico-latencia" role="img" aria-label="Gráfico de latência média e p95 por segundo"></canvas>
+        </div>
+        <p class="rodape-grafico">Janela móvel de 60 segundos · eixo em milissegundos</p>
+      </article>
+
+      <article class="cartao cartao-grafico">
+        <header class="cabecalho-cartao">
+          <div>
+            <h2>Resultados por segundo</h2>
+            <p class="texto-apoio">Contagem absoluta de respostas e falhas observadas.</p>
+          </div>
+          <span class="selo selo-ao-vivo">
+            <span class="ponto-vivo" aria-hidden="true"></span>
+            <span id="selo-resultados-texto">Ao vivo</span>
+          </span>
+        </header>
+        <div class="legenda">
+          <span><i class="cor-barra cor-teal"></i> Sucesso</span>
+          <span><i class="cor-barra cor-ambar"></i> Rejeitado</span>
+          <span><i class="cor-barra cor-rosa"></i> Falha</span>
+        </div>
+        <div class="area-grafico area-grafico-resultados">
+          <canvas id="grafico-resultados" role="img" aria-label="Gráfico de barras empilhadas com sucessos, rejeições e falhas por segundo"></canvas>
+        </div>
+        <p class="rodape-grafico">Janela móvel de 60 segundos · eixo em requisições</p>
+      </article>
+    </section>
+
+    <section class="grade-inferior">
+      <article class="cartao">
+        <header class="cabecalho-cartao">
+          <div>
+            <h2>Por cliente</h2>
+            <p class="texto-apoio">Agregado real por identidade de laboratório.</p>
+          </div>
+        </header>
+        <div class="tabela-rolagem">
+          <table>
+            <thead>
+              <tr>
+                <th scope="col">Cliente</th>
+                <th scope="col">Papel</th>
+                <th scope="col" class="numero">Total</th>
+                <th scope="col" class="numero">Sucesso</th>
+                <th scope="col" class="numero">Rejeitado</th>
+                <th scope="col" class="numero">Falhas</th>
+                <th scope="col" class="numero">p95</th>
+              </tr>
+            </thead>
+            <tbody id="tabela-clientes">
+              <tr>
+                <td colspan="7" class="vazio-tabela">Aguardando requisições medidas.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </article>
+
+      <aside class="cartao cartao-simulacao">
+        <header class="cabecalho-cartao">
+          <div>
+            <p class="sobretitulo">Configuração, não resultado</p>
+            <h2>Distribuição simulada</h2>
+          </div>
+        </header>
+        <dl class="lista-detalhes">
+          <div><dt>Clientes virtuais</dt><dd id="detalhe-clientes">—</dd></div>
+          <div><dt>Taxa por cliente</dt><dd id="detalhe-taxa">—</dd></div>
+          <div><dt>Duração</dt><dd id="detalhe-duracao">—</dd></div>
+          <div><dt>Volume planejado</dt><dd id="detalhe-volume">—</dd></div>
+          <div><dt>Vagas de processamento</dt><dd id="detalhe-capacidade">—</dd></div>
+          <div><dt>Proteção no cenário</dt><dd id="detalhe-protecao">—</dd></div>
+        </dl>
+        <div id="chips-clientes" class="chips-clientes" aria-label="Clientes virtuais configurados"></div>
+        <p class="nota nota-alerta">
+          Estes valores descrevem o gerador de carga. Eles <strong>não são
+          resultados</strong> e não devem ser interpretados como medições de rede.
+        </p>
+      </aside>
+    </section>
+
+    <section class="cartao cartao-comparacao" aria-labelledby="titulo-comparacao">
+      <div class="cabecalho-secao interno">
+        <div>
+          <p class="sobretitulo">Experiência do usuário legítimo</p>
+          <h2 id="titulo-comparacao">Comparação: com e sem proteção</h2>
+        </div>
+        <p class="texto-secao">
+          Os cartões usam a execução mais recente de cada configuração. Para uma
+          comparação válida, execute o mesmo cenário nas duas condições.
+        </p>
+      </div>
+
+      <p id="comparacao-vazia" class="estado-vazio">
+        Ainda não há duas execuções concluídas. Rode um cenário sem proteção e
+        depois o mesmo cenário com proteção.
+      </p>
+
+      <div id="comparacao-cartoes" class="grade-comparacao" hidden>
+        <article id="comp-sem" class="cartao-comparacao-item">
+          <div class="linha-comparacao">
+            <span class="selo selo-neutro">Sem proteção</span>
+            <span id="comp-sem-quando" class="quando">—</span>
+          </div>
+          <strong id="comp-sem-taxa" class="numero-grande">—</strong>
+          <span class="rotulo-numero">sucesso da sonda legítima</span>
+          <dl class="mini-metricas">
+            <div><dt>Latência p95 da sonda</dt><dd id="comp-sem-p95">—</dd></div>
+            <div><dt>Falhas da sonda</dt><dd id="comp-sem-falhas">—</dd></div>
+            <div><dt>Rejeições da sonda</dt><dd id="comp-sem-rejeicoes">—</dd></div>
+            <div><dt>Cenário</dt><dd id="comp-sem-cenario">—</dd></div>
+          </dl>
+        </article>
+
+        <article id="comp-com" class="cartao-comparacao-item destaque">
+          <div class="linha-comparacao">
+            <span class="selo selo-verde">Com proteção</span>
+            <span id="comp-com-quando" class="quando">—</span>
+          </div>
+          <strong id="comp-com-taxa" class="numero-grande">—</strong>
+          <span class="rotulo-numero">sucesso da sonda legítima</span>
+          <dl class="mini-metricas">
+            <div><dt>Latência p95 da sonda</dt><dd id="comp-com-p95">—</dd></div>
+            <div><dt>Falhas da sonda</dt><dd id="comp-com-falhas">—</dd></div>
+            <div><dt>Rejeições da sonda</dt><dd id="comp-com-rejeicoes">—</dd></div>
+            <div><dt>Cenário</dt><dd id="comp-com-cenario">—</dd></div>
+          </dl>
+        </article>
+      </div>
+      <p id="comparacao-delta" class="resultado-delta" hidden></p>
+    </section>
+
+    <section class="cartao definicoes" aria-labelledby="titulo-definicoes">
+      <div class="cabecalho-secao interno">
+        <div>
+          <p class="sobretitulo">Transparência metodológica</p>
+          <h2 id="titulo-definicoes">Como interpretar os números</h2>
+        </div>
+      </div>
+      <div class="grade-definicoes">
+        <div>
+          <h3>Sucesso</h3>
+          <p>Resposta HTTP 200 emitida após ocupar uma vaga de processamento.</p>
+        </div>
+        <div>
+          <h3>Rejeitado</h3>
+          <p>Resposta HTTP 429 emitida pelo limitador de taxa daquele cliente.</p>
+        </div>
+        <div>
+          <h3>Falha de disponibilidade</h3>
+          <p>HTTP 503 por capacidade esgotada ou erro de transporte sem resposta.</p>
+        </div>
+        <div>
+          <h3>Latência</h3>
+          <p>Tempo real do handler no servidor para respostas 200; p95 é o percentil 95 da amostra.</p>
+        </div>
+        <div>
+          <h3>Distribuição simulada</h3>
+          <p>Clientes virtuais são threads locais identificadas no cabeçalho do laboratório, não máquinas remotas.</p>
+        </div>
+        <div>
+          <h3>Processamento sintético</h3>
+          <p>A pausa de {{ limites.processamento_simulado_ms }} ms representa trabalho limitado; não é uma medição de hardware.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="rodape">
+    <div class="wrap rodape-grade">
+      <div>
+        <strong>DDoSLab</strong>
+        <span>Projeto final · Segurança da Computação · UFPB</span>
+      </div>
+      <div>
+        Ivaldo Pureza Freire Júnior · Diogo Soares Alves Barreto de Carvalho
+      </div>
+    </div>
+  </footer>
+
+  <noscript>
+    <div class="aviso-sem-js">
+      O painel em tempo real precisa de JavaScript. O servidor e a API continuam
+      disponíveis, mas os controles não funcionarão sem ele.
+    </div>
+  </noscript>
+</body>
+</html>
